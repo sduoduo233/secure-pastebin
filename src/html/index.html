@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>End to End Encrypted Clipboard</title>
+
+    <script src="https://ajax.aspnetcdn.com/ajax/jQuery/jquery-3.7.1.min.js"></script>
+    <script src="/qrcode.js"></script>
+
+</head>
+
+<body>
+
+    <div id="container">
+        <select id="destroy" autocomplete="off">
+            <option value="-1">Do not destroy</option>
+            <option value="-2" selected>Descroy when viewed</option>
+            <option value="60">Destroy in 1 minute</option>
+            <option value="300">Destroy in 5 minute</option>
+            <option value="3600">Destroy in 1 hour</option>
+            <option value="86400">Destroy in 1 day</option>
+            <option value="604800">Destroy in 1 week</option>
+            <option value="2592000">Destroy in 30 days</option>
+        </select>
+        <button type="button" id="button">Submit</button><br>
+        <div id="info">
+            <p>Your password is <span id="info-password"></span></p>
+            <p>Your paste is at <a id="info-link"></a></p>
+            <p>Visiting link above will send the password to the server.</p>
+            <p>Use the link below and share the password secretly if you want true end-to-end encryption.</p>
+            <p><a id="info-link-nopwd"></a></p>
+            <p>Qrcode with password:</p>
+            <div id="qrcode-placeholder"></div>
+        </div>
+        <textarea id="plaintext" autocomplete="off"></textarea>
+
+
+    </div>
+
+    <style>
+        textarea {
+            width: calc(100% - 8px);
+            resize: vertical;
+            height: 100%;
+            font-family: monospace;
+        }
+
+        body {
+            margin: 0px;
+        }
+
+        html,
+        form,
+        body,
+        #container {
+            height: 100%;
+        }
+
+        #container {
+            padding: 8px;
+        }
+
+        #info-password {
+            user-select: all;
+        }
+    </style>
+
+    <script>
+
+        $(function () {
+
+            $("#info").hide();
+
+            function bytes2hex(buffer) {
+                return [...new Uint8Array(buffer)]
+                    .map(x => x.toString(16).padStart(2, '0'))
+                    .join('');
+            }
+
+            function arrayBufferToBase64(buffer) {
+                let binary = '';
+                let bytes = new Uint8Array(buffer);
+                let len = bytes.byteLength;
+                for (let i = 0; i < len; i++) {
+                    binary += String.fromCharCode(bytes[i]);
+                }
+                return window.btoa(binary);
+            }
+
+            function insertDash(s) {
+                return s.substring(0,5) + "-" + s.substring(5);
+            }
+
+            $("#button").on("click", async function () {
+
+                let formData = new FormData();
+
+                // generate password
+                let password = crypto.getRandomValues(new Uint8Array(5));
+                let passwordText = insertDash(bytes2hex(password));
+
+                let key = await crypto.subtle.importKey(
+                    "raw",
+                    password,
+                    "PBKDF2",
+                    false,
+                    ["deriveKey"]
+                );
+
+                // generate salt
+                let salt = crypto.getRandomValues(new Uint8Array(16));
+                formData.set("salt", bytes2hex(salt));
+
+                console.log("salt", salt);
+
+                // generate iv
+                let iv = crypto.getRandomValues(new Uint8Array(16));
+                formData.set("iv", bytes2hex(iv));
+
+                console.log("iv", iv);
+
+                // derive key for AES encryption
+                let derivedKey = await crypto.subtle.deriveKey(
+                    { name: "PBKDF2", hash: "SHA-256", salt: salt, iterations: 100000 },
+                    key,
+                    { name: "AES-GCM", length: 256 },
+                    true,
+                    ["encrypt"]
+                );
+
+                console.log("derivedKey", await crypto.subtle.exportKey("raw", derivedKey));
+
+                // encrypt
+
+                let plaintext = new TextEncoder().encode($("#plaintext").val());
+                let ciphertext = await crypto.subtle.encrypt(
+                    { name: "AES-GCM", iv: iv },
+                    derivedKey,
+                    plaintext
+                );
+
+                console.log("plaintext", plaintext);
+
+                console.log("ciphertext", ciphertext);
+
+                formData.set("ciphertext", arrayBufferToBase64(ciphertext));
+
+                formData.set("destroy", $("#destroy").val())
+
+                // submit
+                let resp = await fetch("/", {
+                    body: formData,
+                    method: "POST"
+                });
+
+                let id = insertDash(await resp.text());
+
+                // display results
+                $("#info").show();
+                $("#info-password").text(passwordText);
+                $("#info-link").text(`${location.protocol}//${location.host}/i?${id}.${passwordText}`);
+                $("#info-link").attr("href", `${location.protocol}//${location.host}/i?${id}.${passwordText}`);
+                $("#info-link-nopwd").text(`${location.protocol}//${location.host}/i?${id}`);
+                $("#info-link-nopwd").attr("href", `${location.protocol}//${location.host}/i?${id}`);
+
+                $("textarea").hide();
+                $("button").hide();
+                $("select").hide();
+
+
+                // display qrcode
+                let qr = qrcode(0, "H");
+                qr.addData(`${location.protocol}//${location.host}/i?${id}.${passwordText}`);
+                qr.make();
+                document.getElementById('qrcode-placeholder').innerHTML = qr.createTableTag(4);
+            });
+
+        });
+
+    </script>
+
+</body>
+
+</html>

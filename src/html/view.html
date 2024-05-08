@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>End to End Encrypted Clipboard</title>
+
+    <script src="https://ajax.aspnetcdn.com/ajax/jQuery/jquery-3.7.1.min.js"></script>
+</head>
+
+<body>
+
+    <div>
+        <a href="/">Create a new paste</a><br>
+
+        <label>Password</label>
+        <input type="text" id="password">
+        <button id="button">Decrypt</button><br>
+        <span id="error"></span>
+        <textarea id="plaintext" readonly></textarea>
+    </div>
+
+    <style>
+        textarea {
+            width: calc(100% - 8px);
+            resize: vertical;
+            height: 100%;
+            font-family: monospace;
+        }
+
+        body {
+            margin: 0px;
+        }
+
+        html,
+        body,
+        div {
+            height: 100%;
+        }
+
+        div {
+            padding: 8px;
+        }
+
+        #error {
+            color: red;
+        }
+    </style>
+
+    <script>
+        // convert hex string to uint8array
+        const fromHexString = (hexString) => Uint8Array.from(hexString.match(/.{1,2}/g).map((byte) => parseInt(byte, 16)));
+
+
+        $(function () {
+
+            const DATA = "[[DATA]]";
+
+            function base64ToArrayBuffer(base64) {
+                let binaryString = atob(base64);
+                let bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                return bytes.buffer;
+            }
+
+            function tryDecrypt() {
+                decrypt().catch((e) => {
+                    $("#error").show();
+                    $("#error").text("Decryption failed: " + e);
+                });
+            }
+
+            async function decrypt() {
+                $("#plaintext").val("");
+                $("#error").hide();
+
+                if ($("#password").val() === "") {
+                    $("#error").show();
+                    $("#error").text("Password is empty.")
+                    return;
+                }
+
+                let splits = DATA.split(".");
+                let ciphertext = base64ToArrayBuffer(splits[0]);
+                let iv = fromHexString(splits[1]);
+                let salt = fromHexString(splits[2]);
+                let password = fromHexString($("#password").val().replaceAll("-", ""));
+
+                console.log("salt", salt);
+                console.log("iv", iv);
+
+                // import password
+                let key = await crypto.subtle.importKey(
+                    "raw",
+                    password,
+                    "PBKDF2",
+                    false,
+                    ["deriveKey"]
+                );
+
+                // derive key for AES decryption
+                let derivedKey = await crypto.subtle.deriveKey(
+                    { name: "PBKDF2", hash: "SHA-256", salt: salt, iterations: 100000 },
+                    key,
+                    { name: "AES-GCM", length: 256 },
+                    true,
+                    ["decrypt"]
+                );
+
+                console.log("derivedKey", await crypto.subtle.exportKey("raw", derivedKey));
+
+                console.log("ciphertext", ciphertext);
+
+                // decrypt
+                let plaintext = await crypto.subtle.decrypt(
+                    {
+                        name: "AES-GCM",
+                        iv: iv,
+                    },
+                    derivedKey,
+                    ciphertext
+                );
+
+                console.log("plaintext", plaintext);
+
+                $("#plaintext").val(new TextDecoder().decode(plaintext));
+            }
+
+            let splits = new URL(location.href).search.substring(1).split(".");
+            if (splits.length >= 2) {
+                $("#password").val(splits[1]);
+                decrypt();
+            } else {
+                $("#error").show();
+                $("#error").text("Password is not included in the URL. You must input a valid password to view the content.")
+            }
+
+            $("#button").on("click", tryDecrypt);
+        });
+
+    </script>
+
+</body>
+
+</html>
